@@ -5,95 +5,18 @@ import base64
 import requests
 import jwt
 from pymongo import MongoClient
-from flask import Flask, jsonify, request, json
+from flask import Flask, jsonify, request, json, abort
 from passlib.hash import pbkdf2_sha256
 
 app = Flask(__name__)
 
 # Set up debug file and choose its logging level
-logging.basicConfig(filename="Debug.log", level=logging.INFO)
-
-class InMemoryDatabase(object):
-    """
-    To save you setting up a database, create a
-    class to hold any information in memory while the
-    app is running
-    """
-    def __init__(self):
-        self.users = []
-    
-    def add_user(self,username,password):
-        for user in self.users:
-            if user["Details"]["Username"] == username:
-                return False
-        self.users.append({
-            "Details": {
-                "Username": username,
-                "Password": password
-            },
-            "Data": {
-
-            }
-        })
-        return True
-    
-    def create_token(self,username,password):
-        for user in self.users:
-            if user["Details"]["Username"] == username:
-                if pbkdf2_sha256.verify(password,user["Details"]["Password"]):
-                    try:
-                        # Create session token
-                        payload = {
-                            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=0, hours=1),
-                            'iat': datetime.datetime.utcnow(),
-                            'sub': username
-                        }
-                        token = jwt.encode(
-                            payload,
-                            user["Details"]["Password"],
-                            algorithm='HS256'
-                        )
-                        # Create or replace a session object
-                        db.sessions.replace_one(
-                            {"UID":user["_id"]},
-                            {
-                                "UID": user["_id"],
-                                "SessionToken": token,
-                                "Created": payload["iat"],
-                                "Expires": payload["exp"]
-                            },
-                            upsert=True
-                            })
-                        return token
-                    except Exception as e:
-                        return e
-                else:
-                    return None
-    
-    def is_authorised(self,token):
-        """
-        Decodes the auth token
-        :param auth_token:
-        :return: integer|string
-        """
-        try:
-            if db.sessions.find_one({"SessionToken":token}) is None:
-                return False
-            for user in self.users:
-                if user["Details"]["Username"] == username:
-                    password = user["Details"]["Password"]
-                    break
-            payload = jwt.decode(auth_token, password)
-            return True
-        except jwt.ExpiredSignatureError:
-            return 'Signature expired. Please log in again.'
-        except jwt.InvalidTokenError:
-            return 'Invalid token. Please log in again.'
+logging.basicConfig(filename="Debug.log", level=logging.DEBUG)
 
 def startup():
     help_string = """
         The API is available at:
-        http://localhost:5000/api/todo/
+        http://localhost:5000/api/
 
         Example use:
 
@@ -105,36 +28,55 @@ def startup():
         A user has been created on startup with the following credentials:
             Username: Testuser
             Password: Secretcode
+
+        API end points:
+
+        [POST]
+        /login
+        
+        Takes login details as json with keys "Username" and "Password".
+        Returns a json object showing the session token that should be sent as a
+        cookie for all subsequent requests with the key of "SessionToken".
+
+        [GET, POST]
+        /todo
+
+        For a GET request, returns all todo list items for the user provided
+        in the session token.
+
+        For a POST request, takes json in the form:
+
+        {
+            "Description": string,
+            "Completed": boolean
+        }
         """
     print(help_string)
-    # Generate starting data if it does not already exist
+    # Generate starting data
     client = MongoClient()
     db = client.Novastone
-    users = db.Users
-    firstUser = users.find_one({"Username":"Testuser"})
-    if (firstUser is None):
-        result = users.insert_one({
+    db.users.replace_one(
+        {"Username":"Testuser"},
+        {
             "Username": "Testuser",
             "Password": pbkdf2_sha256.hash("Secretcode")
-        })
-    
-
-    #DB = InMemoryDatabase()
-    #DB.add_user("Testuser",pbkdf2_sha256.hash("Secretcode"))
+        },
+        upsert=True
+    )
     return db
 
 def create_token(username,password):
-    user = db.user.find_one({"Username":username})
-    if user is not None and pbkdf2_sha256.verify(password,user["Details"]["Password"]):
+    user = db.users.find_one({"Username":username})
+    if user is not None and pbkdf2_sha256.verify(password,user["Password"]):
         try:
             payload = {
-                'exp': datetime.datetime.utcnow() + datetime.timedelta(days=0, seconds=5),
+                'exp': datetime.datetime.utcnow() + datetime.timedelta(days=0, hours=1),
                 'iat': datetime.datetime.utcnow(),
                 'sub': username
             }
             token = jwt.encode(
                 payload,
-                user["Details"]["Password"],
+                user["Password"],
                 algorithm='HS256'
             )
             # Create or replace a session object
@@ -142,13 +84,13 @@ def create_token(username,password):
                 {"UID":user["_id"]},
                 {
                     "UID": user["_id"],
-                    "SessionToken": token,
+                    "SessionToken": token.decode(),
                     "Created": payload["iat"],
                     "Expires": payload["exp"]
                 },
                 upsert=True
-                })
-            return btoken
+                )
+            return token.decode()
         except Exception as e:
             return e
     else:
@@ -161,13 +103,17 @@ def is_authorised(token):
         :return: integer|string
         """
         try:
-            if db.sessions.find_one({"SessionToken":token}) is None:
+            session = db.sessions.find_one({"SessionToken":token})
+            if  session is None:
                 return 'Invalid token. Please log in again.'
-            username,auth_token = base64.b64decode(token).split(",")
-            user = db.users.find_one({"Username":username})
-            if user is not None:
-                payload = jwt.decode(auth_token, user["Password"])
-                return True
+            else:
+                user = db.users.find_one({"_id":session["UID"]})
+                if user is not None:
+                    jwt.decode(token, user["Password"])
+                    return True
+                else:
+                    print("User is none")
+
         except jwt.ExpiredSignatureError:
             return 'Signature expired. Please log in again.'
         except jwt.InvalidTokenError:
@@ -175,30 +121,85 @@ def is_authorised(token):
 
 db = startup()
 
-@app.route('/login', methods=["POST"])
+@app.route('/api/login', methods=["POST"])
 def login():
-    token = create_token(request.json["Username"],request.json["Password"])
-    if token is not None: 
-        return jsonify({"SessionToken": token})
-    else:
-        return jsonify({"Message":"Invalid username or password"})
+    try:
+        token = create_token(request.json["Username"],request.json["Password"])
+        if token is not None: 
+            response = jsonify({"SessionToken": token})
+            response.set_cookie("SessionToken", token)
+            return response
+        else:
+            response = jsonify({"Error":"Invalid username or password"})
+            return response, 401
+    except KeyError:
+        return jsonify({"Error": "Please provide both a Username and Password key"}), 400
 
-@app.route('/api/todo/<id>', methods=["GET"])
+@app.route('/api/todo/<id>', methods=["PUT","DELETE"])
 def get_item(id):
     if "SessionToken" in request.cookies:
         auth = is_authorised(request.cookies["SessionToken"])
         if (auth is True):
-            chosen_item={}
-            return jsonify({"Items":chosen_item})
+            UID = db.sessions.find_one({"SessionToken":request.cookies["SessionToken"]})["UID"]
+            if request.method == "PUT":
+                item = db.todo.find_one_and_update({"UID":UID,"_id":id})
+                if item is not None:
+                    return jsonify(item),200
+                else:
+                    return jsonify({"Error":"Please provide a valid id"}),400
+            elif request.method == "DELETE":
+                item = db.todo.find_one_and_delete({"UID":UID,"_id":id})
+                if item is not None:
+                    return jsonify({"Id":item["_id"]}),203
+                else:
+                    return jsonify({"Error":"Please provide a valid id"}),400
+            else:
+                abort(404)
         else:
-            return jsonify({"Error":auth})
+            return jsonify({"Error": auth}), 401
     else:
-        return jsonify({"Error":"Please provide a valid session token"})
+        return jsonify({"Error":"Please provide a session token cookie with your request."}), 401
 
-@app.route('/api/todo/', methods=["GET"])
+@app.route('/api/todo', methods=["GET"])
 def get_items():
-    return jsonify({"Items":{},"Message":"Please provide a valid id"})
+    if "SessionToken" in request.cookies:
+        auth = is_authorised(request.cookies["SessionToken"])
+        if (auth is True):
+            UID = db.sessions.find_one({"SessionToken":request.cookies["SessionToken"]})["UID"]
+            result = db.todo.find({"UID":UID})
+            return jsonify(
+                [
+                    {
+                        "Id": str(item["_id"]),
+                        "Description": item["Description"],
+                        "Completed": item["Completed"]
+                    } for item in result]
+            )
 
-@app.route('/api/todo/', methods=['POST'])
-def post_item(json_data):
-    return json_data
+        else:
+            return jsonify({"Error": auth}), 401
+    else:
+        return jsonify({"Error":"Please provide a session token cookie with your request."}), 401
+
+@app.route('/api/todo', methods=['POST'])
+def post_item():
+    if "SessionToken" in request.cookies:
+        auth = is_authorised(request.cookies["SessionToken"])
+        if (auth is True):
+            UID = db.sessions.find_one({"SessionToken":request.cookies["SessionToken"]})["UID"]
+            try:
+                if( isinstance(request.json["Description"], str) and isinstance(request.json["Completed"],bool)):
+                    result = db.todo.insert_one({
+                        "UID": UID,
+                        "Description": request.json["Description"],
+                        "Completed": request.json["Completed"]
+                    })
+                    return jsonify({"Id": str(result.inserted_id)}), 201
+                else:
+                    return jsonify({"Error": "Invalid data provided"}), 400
+            except KeyError:
+                return jsonify({"Error": "Please provide both a Description and Completed key"}), 400
+        else:
+            return jsonify({"Error": auth}), 401
+    else:
+        return jsonify({"Error":"Please provide a session token cookie with your request."}), 401
