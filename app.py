@@ -127,7 +127,7 @@ def is_authorised(token):
                 jwt.decode(token, user["Password"])
                 return True
             else:
-                print("User is none")
+                return 'Invalid token. Please log in again.'
 
     except jwt.ExpiredSignatureError:
         return 'Signature expired. Please log in again.'
