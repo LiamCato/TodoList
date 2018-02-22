@@ -40,6 +40,7 @@ class TestAPIFunctions(unittest.TestCase):
         test_data = {"Description": "An item on my to do list","Completed":False}
         session = requests.session()
         session.post(login_url,json=login_data)
+        session.post(todo_url,json=test_data)
         response = session.get(todo_url).json()
         self.assertTrue(isinstance(response,list))
         self.assertGreaterEqual(len(response),1)
