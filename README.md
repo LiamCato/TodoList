@@ -15,6 +15,7 @@ A simple flask API for managing a to do list
 ## Run the app:
 
 * Download the repository
+* Ensure the mongodb service is running
 * Open a command line / powershell / terminal
 * Add FLASK_APP environment variable to your terminal pointing to the app.py file
 * Use command "flask run" to start the app
